@@ -42,10 +42,12 @@ def main():
     finally:
         if mixed_chunks:
             merged = np.concatenate(mixed_chunks, axis=0)
-            outfile = "data.pkl"
-            with open(outfile, "wb") as file:
-                pickle.dump(merged, file)
-            print(f"[+] Saved {len(merged)} mixed samples, shape: {merged.shape}")
+            with open("data.pkl", "wb") as file:
+                pickle.dump(merged[400:], file)
+            print(f"[+] Saved {len(merged[400:])} mixed samples, shape: {merged[400:].shape}")
+            with open("valid.pkl", "wb") as file:
+                pickle.dump(merged[:400], file)
+            print(f"[+] Saved {len(merged[:400])} mixed samples, shape: {merged[:400].shape}")
         else:
             print("[!] No data collected.")
 

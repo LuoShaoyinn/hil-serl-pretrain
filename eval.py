@@ -124,7 +124,7 @@ def evaluate(
 if __name__ == "__main__":
     evaluate(
         checkpoint_dir="checkpoints",
-        data_filename="data.pkl",
+        data_filename="valid.pkl",
         batch_size=64,
         max_batches=128,
         show_samples=5,

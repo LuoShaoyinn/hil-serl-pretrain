@@ -56,7 +56,7 @@ def save(parallel_state, epoch: int):
         ckpt_dir=ckpt_dir,
         target=host_state.params,
         step=epoch,
-        overwrite=True,
+        overwrite=False,
     )
     print(f"Checkpoint saved for epoch {epoch}.")
 
@@ -175,6 +175,6 @@ if __name__ == "__main__":
     train(   
         data_filename = "data.pkl",
         global_batch_size = 512, 
-        num_epochs = 1, 
+        num_epochs = 200, 
         learning_rate = 1e-4
     )
