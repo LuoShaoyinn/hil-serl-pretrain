@@ -13,4 +13,8 @@ dependencies = [
     "optax>=0.2.6",
     "pyright>=1.1.407",
     "scikit-learn>=1.7.2",
+    "tensorboard>=2.20.0",
+    "tensorboard-plugin-profile>=2.21.3",
+    "tensorflow-cpu>=2.20.0",
+    "xprof>=2.21.3",
 ]
