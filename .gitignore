@@ -44,3 +44,4 @@ data/
 resnet10_params.pkl
 *.pkl
 runs/
+checkpoints/
