@@ -11,8 +11,9 @@ import numpy as np
 from flax.training import checkpoints
 import matplotlib.pyplot as plt
 
-import load_data
+import load_data, load_params
 from train import ResNetAutoEncoder
+
 
 
 def _load_checkpoint_params(
@@ -114,6 +115,9 @@ def evaluate(
     print(f"[eval] Average reconstruction MSE on {total_items} samples: {final_loss:.6f}")
     if viz_pairs:
         _display_reconstructions(viz_pairs)
+
+    load_params.save_resnet10_params(params, "resnet10_params_new.pkl")
+    
     return final_loss
 
 
@@ -122,6 +126,6 @@ if __name__ == "__main__":
         checkpoint_dir="checkpoints",
         data_filename="data.pkl",
         batch_size=64,
-        max_batches=None,
+        max_batches=128,
         show_samples=5,
     )

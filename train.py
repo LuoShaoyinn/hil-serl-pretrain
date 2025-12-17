@@ -49,7 +49,7 @@ def create_train_state(
 
 
 def save(parallel_state, epoch: int):
-    host_state = jax.device_get(jax.tree_map(lambda x: x[0], parallel_state))
+    host_state = jax.device_get(jax.tree.map(lambda x: x[0], parallel_state))
     ckpt_dir = os.path.abspath("checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
     checkpoints.save_checkpoint(
@@ -157,14 +157,14 @@ def train(
             epoch_loss += float(jax.device_get(loss).mean())
             steps += 1
             
-            if(steps % 2) == 0:
+            if (steps % 5) == 0:
                 print(".", end="", flush=True)
 
         avg_loss = epoch_loss / max(steps, 1)
         print(f" - MSE Loss: {avg_loss:.6f}")
         writer.scalar("train/avg_loss", avg_loss, epoch)
 
-        if epoch % 10 == 0:
+        if epoch % 10 == 0 or epoch == num_epochs:
             save(parallel_state, epoch)
 
     writer.flush()
@@ -175,6 +175,6 @@ if __name__ == "__main__":
     train(   
         data_filename = "data.pkl",
         global_batch_size = 512, 
-        num_epochs = 5, 
+        num_epochs = 1, 
         learning_rate = 1e-4
     )

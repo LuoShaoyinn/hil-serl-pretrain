@@ -29,3 +29,15 @@ def load_resnet10_params(params: Mapping[str, Any]) -> Mapping[str, Any]:
             print(f"[load_params] Replaced encoder weight '{key}'.")
             
     return freeze(params_mutable)
+
+
+def save_resnet10_params(params: Mapping[str, Any], filename):
+    params_mutable = unfreeze(params)
+    encoder_params = params_mutable.get("encoder")
+    if encoder_params is None:
+        raise KeyError("[save_params] Missing 'encoder' subtree in params.")
+
+    count = sum(x.size for x in tree_util.tree_leaves(encoder_params))
+    with open(filename, "wb") as f:
+        pkl.dump(encoder_params, f)
+    print(f"[save_params] Saved {count/1e6:.2f}M parameters as ResNet-10.")
