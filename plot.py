@@ -76,6 +76,8 @@ def main() -> None:
 
     _plot_pairs(originals, decoded_np)
 
+    params_utils.save_resnet10_params(params, "retrained_resnet10_params.pkl")
+
 
 if __name__ == "__main__":
     main()
