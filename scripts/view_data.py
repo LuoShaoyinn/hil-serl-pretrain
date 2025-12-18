@@ -16,7 +16,7 @@ def to_display_image(raw_img: np.ndarray) -> np.ndarray:
 
 def main() -> None:
     # Load the dataset once
-    filename = 'data.pkl'
+    filename = 'dataset/data.pkl'
     if len(sys.argv) > 1:
         filename = sys.argv[1]
     with open(filename, 'rb') as f:

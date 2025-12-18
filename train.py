@@ -4,7 +4,7 @@
 import os
 import time
 import functools
-from typing import Iterator, Optional
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -14,10 +14,10 @@ from flax import linen as nn
 from flax.training import train_state, checkpoints
 from flax.metrics.tensorboard import SummaryWriter
 
-import load_data
-import resnet_encoder
-import self_decoder
-import load_params
+import data_utils
+import encoder
+import decoder
+import params_utils
 
 MASK_KEEP_PROB = 0.25
 
@@ -25,58 +25,29 @@ MASK_KEEP_PROB = 0.25
 class ResNetAutoEncoder(nn.Module):
     """Wrap ResNet encoder and decoder into a single auto-encoder module."""
     def setup(self):
-        self.encoder = resnet_encoder.ResNetEncoder()
-        self.decoder = self_decoder.SelfDecoder()
+        self.encoder = encoder.ResNetEncoder()
+        self.decoder = decoder.SelfDecoder()
 
     def __call__(self, inputs: jnp.ndarray, train: bool = True) -> jnp.ndarray:
         features = self.encoder(inputs, train=train)
         return self.decoder(features)
 
 
-def create_train_state(
-    rng: jax.Array, learning_rate: float
-) -> train_state.TrainState:
-    model = ResNetAutoEncoder()
-    dummy = jnp.zeros((1, 128, 128, 3), dtype=jnp.float32)
-    params = model.init(rng, dummy, train=True)["params"]
-    try:
-        params = load_params.load_resnet10_params(params)
-    except FileNotFoundError as exc:
-        print(exc)
-    tx = optax.adam(learning_rate)
-    state = train_state.TrainState.create(apply_fn=model.apply, params=params, tx=tx)
-    return state
-
-
-def save(parallel_state, epoch: int):
-    host_state = jax.device_get(jax.tree.map(lambda x: x[0], parallel_state))
-    ckpt_dir = os.path.abspath("checkpoints")
-    os.makedirs(ckpt_dir, exist_ok=True)
-    checkpoints.save_checkpoint(
-        ckpt_dir=ckpt_dir,
-        target=host_state.params,
-        step=epoch,
-        overwrite=False,
-    )
-    print(f"Checkpoint saved for epoch {epoch}.")
-
-
 def apply_random_mask(batch: jnp.ndarray, rng: jax.Array):
     mask_shape = batch.shape[:-1] + (1,)
     keep_mask = jax.random.bernoulli(rng, p=MASK_KEEP_PROB, shape=mask_shape)
-    keep_mask = keep_mask.astype(batch.dtype)
+    keep_mask = keep_mask.astype(jnp.float32)
     masked_inputs = batch * keep_mask
-    # Reconstruction loss uses the masked-out regions (1 - keep_mask)
-    recon_mask = 1.0 - keep_mask
-    return masked_inputs, recon_mask
+    return masked_inputs
 
 
 def masked_mse_loss(params, apply_fn, batch, rng):
-    masked_inputs, recon_mask = apply_random_mask(batch, rng)
+    batch = batch.astype(jnp.float32)
+    masked_inputs = apply_random_mask(batch, rng)
+    target = batch / 255.0  # Decoder outputs [0, 1]
     recon = apply_fn({"params": params}, masked_inputs, train=True)
-    diff = (recon - batch) * recon_mask
-    denom = jnp.maximum(jnp.sum(recon_mask), 1.0)
-    return jnp.sum(diff * diff) / denom
+    diff = recon - target
+    return jnp.mean(diff * diff)
 
 
 @functools.partial(jax.pmap, axis_name="device")
@@ -90,82 +61,82 @@ def train_step(state: train_state.TrainState, batch: jnp.ndarray, rng: jnp.ndarr
     new_state = state.apply_gradients(grads=grads)
     return new_state, loss
 
+@functools.partial(jax.pmap, axis_name="device")
+def eval_step(state: train_state.TrainState, batch: jnp.ndarray, rng: jnp.ndarray):
+    loss = masked_mse_loss(state.params, state.apply_fn, batch, rng)
+    return jax.lax.pmean(loss, axis_name="device")
 
-def iterate_minibatches(
-    data: np.ndarray, batch_size: int, rng: np.random.Generator
-) -> Iterator[np.ndarray]:
-    idx = rng.permutation(len(data))
-    for start in range(0, len(data) - batch_size + 1, batch_size):
-        excerpt = idx[start : start + batch_size]
-        yield data[excerpt]
 
 
 def train(
-    data_filename: str = "data.pkl",
-    global_batch_size: int = 512,
-    num_epochs: int = 50,
+    train_batch_size: int = 512,
+    valid_batch_size: int = 128,
+    num_epochs: int = 400,
     learning_rate: float = 1e-4,
     log_dir: Optional[str] = None,
 ):
-
     num_devices = jax.local_device_count()
-    if global_batch_size % num_devices != 0:
-        raise ValueError(f"Global batch size {global_batch_size} must be divisible by device count {num_devices}.")
-    per_device_batch = global_batch_size // num_devices
+    if train_batch_size % num_devices != 0:
+        raise ValueError(
+            f"Global batch size {train_batch_size} must be divisible by device count {num_devices}."
+        )
+    per_device_batch = train_batch_size // num_devices
 
-    # Load dataset
-    dataset = np.asarray(load_data.load_data(data_filename, global_batch_size))
-
+    # Load dataset and construct jax-dataloader pipeline
+    train_loader = data_utils.load_data("dataset/data.pkl",  train_batch_size)
+    valid_loader = data_utils.load_data("dataset/valid.pkl", valid_batch_size)
+    print(f"Train dataset batches: {len(train_loader)}, Valid dataset batches: {len(valid_loader)}")
+    
     # Initialize model and training state
     init_rng, train_rng = jax.random.split(jax.random.PRNGKey(0))
-    state = create_train_state(init_rng, learning_rate)
+    state = params_utils.create_train_state(init_rng, learning_rate)
     parallel_state = jax.device_put_replicated(state, jax.devices())
 
-    np_rng = np.random.default_rng(0)
     if log_dir is None:
-        dataset_name = os.path.splitext(os.path.basename(data_filename))[0]
-        log_dir = os.path.join(
-            "runs", f"{dataset_name}_bs{global_batch_size}_lr{learning_rate}_{int(time.time())}"
-        )
+        log_dir = os.path.join("runs", f"{int(time.time())}")
+                               
     os.makedirs(log_dir, exist_ok=True)
     writer = SummaryWriter(log_dir)
     print(f"Training for {num_epochs} epochs on {num_devices} device(s).")
-    print(f"[tensorboard] Logging to {os.path.abspath(log_dir)}")
+    print(f"Logging to {os.path.abspath(log_dir)}")
+
     for epoch in range(1, num_epochs + 1):
+        print(f"Epoch {epoch:3d}/{num_epochs}", end="", flush=True)
         epoch_loss = 0.0
         steps = 0
 
-        print(f"Epoch {epoch:3d}/{num_epochs}", end="", flush=True)
-        for batch in iterate_minibatches(dataset, global_batch_size, np_rng):
-            if len(batch) != global_batch_size:
-                # Skip incomplete batches to keep per-device shapes consistent.
-                print(
-                    f"\n[train] Skipping partial batch of size {len(batch)}; expected {global_batch_size}.",
-                    flush=True,
-                )
-                continue
-
-            batch = batch.astype(np.float32) / 255.0
-            sharded = batch.reshape(
-                (num_devices, per_device_batch, 128, 128, 3)
-            )
+        for batch in train_loader:
+            batch = jnp.asarray(batch, dtype=jnp.float32)[0]
+            assert batch.shape[0] == train_batch_size
+            sharded = batch.reshape((num_devices, per_device_batch) + batch.shape[1:])
 
             train_rng, step_rng = jax.random.split(train_rng)
             step_rngs = jax.random.split(step_rng, num_devices)
 
             parallel_state, loss = train_step(parallel_state, sharded, step_rngs)
-            epoch_loss += float(jax.device_get(loss).mean())
+            step_loss = float(np.mean(jax.device_get(loss)))
+            epoch_loss += step_loss
             steps += 1
-            
+
             if (steps % 5) == 0:
                 print(".", end="", flush=True)
 
         avg_loss = epoch_loss / max(steps, 1)
         print(f" - MSE Loss: {avg_loss:.6f}")
-        writer.scalar("train/avg_loss", avg_loss, epoch)
+        writer.scalar("train/loss", avg_loss, epoch)
 
-        if epoch % 10 == 0 or epoch == num_epochs:
-            save(parallel_state, epoch)
+        if epoch % max(1, num_epochs // 10) == 0 or epoch == num_epochs:
+            eval_loss_avg = 0.0
+            for valid_batch in valid_loader:
+                valid_batch = jnp.asarray(valid_batch, dtype=jnp.float32)[0]
+                assert valid_batch.shape[0] == valid_batch_size
+                valid_shared = valid_batch.reshape((num_devices, valid_batch.shape[0] // num_devices) + valid_batch.shape[1:])
+                eval_loss = eval_step(parallel_state, valid_shared, step_rngs)
+                eval_loss_avg += float(np.mean(jax.device_get(eval_loss)))
+            eval_loss_avg /= len(valid_loader)
+            print(f"==== Eval MSE Loss: {eval_loss_avg:.6f} ====")
+            writer.scalar("eval/loss", eval_loss_avg, epoch)
+            params_utils.save_checkpoint(parallel_state, epoch)
 
     writer.flush()
     writer.close()
@@ -173,8 +144,8 @@ def train(
 if __name__ == "__main__":
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     train(   
-        data_filename = "data.pkl",
-        global_batch_size = 512, 
-        num_epochs = 200, 
+        train_batch_size = 512,
+        valid_batch_size = 128,
+        num_epochs = 400, 
         learning_rate = 1e-4
     )
