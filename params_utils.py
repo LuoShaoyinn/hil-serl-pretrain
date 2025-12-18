@@ -45,7 +45,10 @@ def save_resnet10_params(params: Mapping[str, Any], filename):
 
 
 def create_train_state(
-    rng: jax.Array, learning_rate: float
+    rng: jax.Array,
+    learning_rate: float,
+    decay_steps: int = 10000,
+    decay_rate: float = 0.95,
 ) -> train_state.TrainState:
     model = ResNetAutoEncoder()
     dummy = jnp.zeros((1, 128, 128, 3), dtype=jnp.float32)
@@ -54,7 +57,13 @@ def create_train_state(
         params = load_resnet10_params(params)
     except FileNotFoundError as exc:
         print(exc)
-    tx = optax.adam(learning_rate)
+    schedule = optax.exponential_decay(
+        init_value=learning_rate,
+        transition_steps=decay_steps,
+        decay_rate=decay_rate,
+        staircase=True,
+    )
+    tx = optax.adam(schedule)
     state = train_state.TrainState.create(apply_fn=model.apply, params=params, tx=tx)
     return state
 

@@ -32,6 +32,7 @@ class ResNetAutoEncoder(nn.Module):
         return self.decoder(features)
 
 
+@jax.jit
 def apply_random_mask(batch: jnp.ndarray, rng: jax.Array):
     mask_shape = batch.shape[:-1] + (1,)
     keep_mask = jax.random.bernoulli(rng, p=MASK_KEEP_PROB, shape=mask_shape)
@@ -40,6 +41,7 @@ def apply_random_mask(batch: jnp.ndarray, rng: jax.Array):
     return masked_inputs
 
 
+@functools.partial(jax.jit, static_argnums=(1,))
 def masked_mse_loss(params, apply_fn, batch, rng):
     batch = batch.astype(jnp.float32)
     masked_inputs = apply_random_mask(batch, rng)
@@ -72,6 +74,8 @@ def train(
     valid_batch_size: int = 128,
     num_epochs: int = 400,
     learning_rate: float = 1e-4,
+    lr_decay_rate: float = 0.95,
+    lr_decay_steps: Optional[int] = None,
     log_dir: Optional[str] = None,
 ):
     num_devices = jax.local_device_count()
@@ -82,13 +86,19 @@ def train(
     per_device_batch = train_batch_size // num_devices
 
     # Load dataset and construct jax-dataloader pipeline
-    train_loader = data_utils.load_data("dataset/data.pkl",  train_batch_size)
-    valid_loader = data_utils.load_data("dataset/valid.pkl", valid_batch_size)
+    train_loader = data_utils.load_data("dataset/data.pkl",  train_batch_size, augment=True)
+    valid_loader = data_utils.load_data("dataset/valid.pkl", valid_batch_size, augment=False)
     print(f"Train dataset batches: {len(train_loader)}, Valid dataset batches: {len(valid_loader)}")
     
     # Initialize model and training state
     init_rng, train_rng = jax.random.split(jax.random.PRNGKey(0))
-    state = params_utils.create_train_state(init_rng, learning_rate)
+    decay_steps = lr_decay_steps or max(1, len(train_loader))
+    state = params_utils.create_train_state(
+        init_rng,
+        learning_rate,
+        decay_steps=decay_steps,
+        decay_rate=lr_decay_rate,
+    )
     parallel_state = jax.device_put_replicated(state, jax.devices())
 
     if log_dir is None:
@@ -107,7 +117,7 @@ def train(
         steps = 0
 
         for batch in train_loader:
-            batch = jnp.asarray(batch, dtype=jnp.float32)[0]
+            batch = jnp.asarray(batch, dtype=jnp.float32)
             assert batch.shape[0] == train_batch_size
             sharded = batch.reshape((num_devices, per_device_batch) + batch.shape[1:])
 
@@ -129,7 +139,7 @@ def train(
         if epoch % eval_epoch == 0 or epoch == num_epochs:
             eval_loss_avg = 0.0
             for valid_batch in valid_loader:
-                valid_batch = jnp.asarray(valid_batch, dtype=jnp.float32)[0]
+                valid_batch = jnp.asarray(valid_batch, dtype=jnp.float32)
                 assert valid_batch.shape[0] == valid_batch_size
                 valid_shared = valid_batch.reshape((num_devices, valid_batch.shape[0] // num_devices) + valid_batch.shape[1:])
                 train_rng, step_rng = jax.random.split(train_rng)
@@ -147,7 +157,7 @@ def train(
 if __name__ == "__main__":
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     train(   
-        train_batch_size = 512,
+        train_batch_size = 256,
         valid_batch_size = 128,
         num_epochs = 400, 
         learning_rate = 1e-4
