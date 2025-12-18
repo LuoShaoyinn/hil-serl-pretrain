@@ -18,7 +18,7 @@ import encoder
 import decoder
 import params_utils
 
-MASK_KEEP_PROB = 0.25
+MASK_RATE = 0.6  # portion of pixels to mask out
 
 
 class ResNetAutoEncoder(nn.Module):
@@ -35,7 +35,8 @@ class ResNetAutoEncoder(nn.Module):
 @jax.jit
 def apply_random_mask(batch: jnp.ndarray, rng: jax.Array):
     mask_shape = batch.shape[:-1] + (1,)
-    keep_mask = jax.random.bernoulli(rng, p=MASK_KEEP_PROB, shape=mask_shape)
+    keep_prob = 1.0 - MASK_RATE
+    keep_mask = jax.random.bernoulli(rng, p=keep_prob, shape=mask_shape)
     keep_mask = keep_mask.astype(jnp.float32)
     masked_inputs = batch * keep_mask
     return masked_inputs
@@ -157,7 +158,7 @@ def train(
 if __name__ == "__main__":
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     train(   
-        train_batch_size = 256,
+        train_batch_size = 512,
         valid_batch_size = 128,
         num_epochs = 400, 
         learning_rate = 1e-4
