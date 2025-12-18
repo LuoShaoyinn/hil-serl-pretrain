@@ -9,9 +9,8 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
 from flax import linen as nn
-from flax.training import train_state, checkpoints
+from flax.training import train_state
 from flax.metrics.tensorboard import SummaryWriter
 
 import data_utils
@@ -100,6 +99,8 @@ def train(
     print(f"Training for {num_epochs} epochs on {num_devices} device(s).")
     print(f"Logging to {os.path.abspath(log_dir)}")
 
+    eval_epoch = np.clip(num_epochs // 10, 1, 10)
+
     for epoch in range(1, num_epochs + 1):
         print(f"Epoch {epoch:3d}/{num_epochs}", end="", flush=True)
         epoch_loss = 0.0
@@ -125,12 +126,14 @@ def train(
         print(f" - MSE Loss: {avg_loss:.6f}")
         writer.scalar("train/loss", avg_loss, epoch)
 
-        if epoch % max(1, num_epochs // 10) == 0 or epoch == num_epochs:
+        if epoch % eval_epoch == 0 or epoch == num_epochs:
             eval_loss_avg = 0.0
             for valid_batch in valid_loader:
                 valid_batch = jnp.asarray(valid_batch, dtype=jnp.float32)[0]
                 assert valid_batch.shape[0] == valid_batch_size
                 valid_shared = valid_batch.reshape((num_devices, valid_batch.shape[0] // num_devices) + valid_batch.shape[1:])
+                train_rng, step_rng = jax.random.split(train_rng)
+                step_rngs = jax.random.split(step_rng, num_devices)
                 eval_loss = eval_step(parallel_state, valid_shared, step_rngs)
                 eval_loss_avg += float(np.mean(jax.device_get(eval_loss)))
             eval_loss_avg /= len(valid_loader)
